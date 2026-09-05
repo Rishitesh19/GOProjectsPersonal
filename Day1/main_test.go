@@ -1,7 +1,8 @@
 package main
 
 import (
-	"net/http"
+	"bytes"
+	"mime/multipart"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -9,16 +10,9 @@ import (
 	"testing"
 )
 
-func TestFileSharing(t *testing.T) {
+func TestUploadOnly(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hello from Go"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	outside := filepath.Join(t.TempDir(), "private.txt")
-	if err := os.WriteFile(outside, []byte("private contents"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(dir, "escape.txt")); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "private.txt"), []byte("secret contents"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	root, err := os.OpenRoot(dir)
@@ -27,32 +21,53 @@ func TestFileSharing(t *testing.T) {
 	}
 	defer root.Close()
 	handler := fileHandler(root)
-
-	for _, tc := range []struct {
-		name, method, path string
-		status             int
-		body               string
-	}{
-		{"listing", "GET", "/", 200, "hello.txt"},
-		{"download", "GET", "/hello.txt", 200, "hello from Go"},
-		{"head", "HEAD", "/hello.txt", 200, ""},
-		{"missing", "GET", "/missing.txt", 404, ""},
-		{"upload rejected", "POST", "/hello.txt", 405, ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, httptest.NewRequest(tc.method, tc.path, nil))
-			if response.Code != tc.status || !strings.Contains(response.Body.String(), tc.body) {
-				t.Fatalf("got %d %q", response.Code, response.Body.String())
-			}
-			if tc.method == "HEAD" && response.Body.Len() != 0 {
-				t.Fatal("HEAD returned a body")
-			}
-		})
+	for _, path := range []string{"/", "/private.txt", "/../private.txt"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest("GET", path, nil))
+		if (path == "/" && strings.Contains(response.Body.String(), "private.txt")) || strings.Contains(response.Body.String(), "secret contents") {
+			t.Fatal("exposed private file")
+		}
+		if path == "/private.txt" && response.Code != 404 {
+			t.Fatal("file is accessible")
+		}
+	}
+	for i := 0; i < 2; i++ {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		file, err := writer.CreateFormFile("file", "private.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		file.Write([]byte("from phone"))
+		writer.Close()
+		request := httptest.NewRequest("POST", "/upload", &body)
+		request.Header.Set("Content-Type", writer.FormDataContentType())
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != 303 {
+			t.Fatalf("upload: %d %s", response.Code, response.Body.String())
+		}
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 3 {
+		t.Fatalf("expected original plus two uploads, got %d", len(entries))
+	}
+	for _, entry := range entries {
+		content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "from phone"
+		if entry.Name() == "private.txt" {
+			want = "secret contents"
+		}
+		if string(content) != want {
+			t.Fatalf("unexpected content: %q", content)
+		}
 	}
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/escape.txt", nil))
-	if response.Code < 400 || strings.Contains(response.Body.String(), "private contents") {
-		t.Fatal("symlink exposed a file outside the shared folder")
+	handler.ServeHTTP(response, httptest.NewRequest("POST", "/upload", strings.NewReader("bad multipart")))
+	if response.Code != 400 {
+		t.Fatal("invalid upload accepted")
 	}
 }
