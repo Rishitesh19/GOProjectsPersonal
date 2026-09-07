@@ -1,0 +1,19 @@
+go makes small tools.
+go reads a file.
+go writes a file.
+go sends a message.
+go runs a task.
+a small tool reads a file.
+a small tool writes a file.
+a small tool sends a message.
+a small task runs in go.
+go makes a small tool.
+go reads a message.
+go writes a message.
+go runs small tasks.
+a small tool makes a file.
+go makes small tools.
+go reads a file.
+go writes a file.
+go sends a message.
+go runs a task.
